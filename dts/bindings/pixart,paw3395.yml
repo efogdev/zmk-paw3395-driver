@@ -28,6 +28,14 @@ properties:
   y-input-code:
     type: int
     required: true
+  power-mode:
+    type: int
+    default: 0
+    description: |
+      Power mode
+      0: High power
+      1: Low power
+      2: Office
   force-awake:
     type: boolean
   init-retry-count:

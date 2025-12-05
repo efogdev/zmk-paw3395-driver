@@ -177,6 +177,12 @@ static int paw3395_async_init_configure(const struct device *dev) {
     }
     LOG_INF("set asix done");
 
+    err = paw3395_lib_set_mode(&config->spi, config->power_mode);
+    if (err < 0) {
+        LOG_ERR("can't set power mode");
+        return err;
+    }
+
     return err;
 }
 
@@ -421,6 +427,12 @@ static int paw3395_attr_set(const struct device *dev, enum sensor_channel chan,
     case PAW3395_ATTR_CPI:
         err = paw3395_lib_set_cpi(&config->spi, PAW3395_SVALUE_TO_CPI(*val));
         break;
+    case PAW3395_ATTR_POWER_MODE:
+        err = paw3395_lib_set_mode(&config->spi, val->val1);
+        break;
+    case PAW3395_ATTR_CALIBRATE:
+        err = paw3395_lib_calibrate(&config->spi, CONFIG_PAW3395_CALIBRATION_TIMEOUT_MS);
+        break;
 
     default:
         LOG_ERR("Unknown attribute");
@@ -467,6 +479,7 @@ static const struct sensor_driver_api paw3395_driver_api = {
         .force_awake = DT_PROP(DT_DRV_INST(n), force_awake),                                       \
         .init_retry_count = DT_PROP(DT_DRV_INST(n), init_retry_count),                             \
         .init_retry_interval = DT_PROP(DT_DRV_INST(n), init_retry_interval),                       \
+        .power_mode = DT_PROP(DT_DRV_INST(n), power_mode),                                         \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, paw3395_init, NULL, &data##n, &config##n, POST_KERNEL,                \
                           CONFIG_INPUT_PAW3395_INIT_PRIORITY, &paw3395_driver_api);

@@ -53,6 +53,7 @@ struct pixart_config {
     bool force_awake;
     uint8_t init_retry_count;
     uint16_t init_retry_interval;
+    uint8_t power_mode;
 };
 
 #ifdef __cplusplus

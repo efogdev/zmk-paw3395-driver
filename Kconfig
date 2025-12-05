@@ -41,6 +41,10 @@ config PAW3395_IGNORE_FIRST_N
   help
     Ignore first N data points after initialization to prevent cursor jump.
 
+config PAW3395_CALIBRATION_TIMEOUT_MS
+  int "Manual calibration timeout"
+  default 10000
+
 config PAW3395_REPORT_INTERVAL_MIN
 	int "PAW3395's default minimum report rate"
 	default 0

@@ -22,6 +22,12 @@ enum paw3395_attribute {
 	/** Sensor CPI for both X and Y axes. */
 	PAW3395_ATTR_CPI,
 
+	/** Sensor power mode. */
+	PAW3395_ATTR_POWER_MODE,
+
+	/** Sensor calibration. */
+	PAW3395_ATTR_CALIBRATE,
+
 };
 
 #ifdef __cplusplus
