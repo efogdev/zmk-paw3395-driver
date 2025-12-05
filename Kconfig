@@ -35,6 +35,12 @@ config PAW3395_INIT_POWER_UP_EXTRA_DELAY_MS
     Default minimum init power up delay is 10ms.
     Use this config to postpone init power up sequence if needs longer bootup time.
 
+config PAW3395_IGNORE_FIRST_N
+  int "Ignore first N data points"
+  default 8
+  help
+    Ignore first N data points after initialization to prevent cursor jump.
+
 config PAW3395_REPORT_INTERVAL_MIN
 	int "PAW3395's default minimum report rate"
 	default 0

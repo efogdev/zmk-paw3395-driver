@@ -184,18 +184,33 @@ static void paw3395_async_init(struct k_work *work) {
     struct k_work_delayable *work_delayable = (struct k_work_delayable *)work;
     struct pixart_data *data = CONTAINER_OF(work_delayable, struct pixart_data, init_work);
     const struct device *dev = data->dev;
+    const struct pixart_config *config = dev->config;
 
     LOG_INF("PAW3395 async init step %d", data->async_init_step);
 
     data->err = async_init_fn[data->async_init_step](dev);
     if (data->err) {
         LOG_ERR("PAW3395 initialization failed in step %d", data->async_init_step);
+        if (data->init_retry_attempts > 0) {
+            data->init_retry_attempts--;
+            data->init_retry_count++;
+            LOG_WRN("PAW3395#%d retrying initialization (attempt %d/%d)",
+                    config->id, data->init_retry_count, config->init_retry_count);
+            
+            data->async_init_step = ASYNC_INIT_STEP_POWER_UP;
+            k_work_schedule(&data->init_work, K_MSEC(config->init_retry_interval));
+        } else {
+            LOG_ERR("PAW3395#%d initialization failed after %d attempts", config->id, config->init_retry_count);
+        }
     } else {
         data->async_init_step++;
 
         if (data->async_init_step == ASYNC_INIT_STEP_COUNT) {
             data->ready = true; // sensor is ready to work
             LOG_INF("PAW3395 initialized");
+            if (data->init_retry_count > 0) {
+                LOG_INF("PAW3395 initialization succeeded after %d retries", data->init_retry_count);
+            }
             paw3395_set_interrupt(dev, true);
         } else {
             k_work_schedule(&data->init_work, K_MSEC(async_init_delay[data->async_init_step]));
@@ -211,6 +226,13 @@ static int paw3395_report_data(const struct device *dev) {
     if (unlikely(!data->ready)) {
         LOG_WRN("Device is not initialized yet");
         return -EBUSY;
+    }
+
+    if (!data->data_ready) {
+        if (++data->data_index >= CONFIG_PAW3395_IGNORE_FIRST_N) {
+            data->data_ready = true;
+        }
+        return 0;
     }
 
 #if CONFIG_PAW3395_REPORT_INTERVAL_MIN > 0
@@ -350,6 +372,9 @@ static int paw3395_init(const struct device *dev) {
     // init device pointer
     data->dev = dev;
 
+    data->init_retry_count = 0;
+    data->init_retry_attempts = config->init_retry_count;
+
     // init trigger handler work
     k_work_init(&data->trigger_work, paw3395_work_callback);
 
@@ -440,6 +465,8 @@ static const struct sensor_driver_api paw3395_driver_api = {
         .x_input_code = DT_PROP(DT_DRV_INST(n), x_input_code),                                     \
         .y_input_code = DT_PROP(DT_DRV_INST(n), y_input_code),                                     \
         .force_awake = DT_PROP(DT_DRV_INST(n), force_awake),                                       \
+        .init_retry_count = DT_PROP(DT_DRV_INST(n), init_retry_count),                             \
+        .init_retry_interval = DT_PROP(DT_DRV_INST(n), init_retry_interval),                       \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, paw3395_init, NULL, &data##n, &config##n, POST_KERNEL,                \
                           CONFIG_INPUT_PAW3395_INIT_PRIORITY, &paw3395_driver_api);
