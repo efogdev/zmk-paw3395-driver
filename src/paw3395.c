@@ -25,7 +25,7 @@ void paw3395_lib_log_err(const char *fmt, ...) {
 #if CONFIG_PAW3395_LOG_LEVEL >= LOG_LEVEL_ERROR
     va_list args;
     va_start(args, fmt);
-    char buf[128];
+    char buf[96];
     vsnprintf(buf, sizeof(buf), fmt, args);
     LOG_ERR("PAW3395_LIB: %s", buf);
     va_end(args);
@@ -37,7 +37,7 @@ void paw3395_lib_log_inf(const char *fmt, ...) {
 #if CONFIG_PAW3395_LOG_LEVEL >= LOG_LEVEL_INFO
     va_list args;
     va_start(args, fmt);
-    char buf[128];
+    char buf[96];
     vsnprintf(buf, sizeof(buf), fmt, args);
     LOG_INF("PAW3395_LIB: %s", buf);
     va_end(args);
@@ -60,8 +60,8 @@ enum async_init_step {
 //   Thus, k_sleep or delayed schedule can be used.
 static const int32_t async_init_delay[ASYNC_INIT_STEP_COUNT] = {
     [ASYNC_INIT_STEP_POWER_UP] = 50 + CONFIG_PAW3395_INIT_POWER_UP_EXTRA_DELAY_MS,
-    [ASYNC_INIT_STEP_FW_LOAD_START] = 5,
-    [ASYNC_INIT_STEP_CONFIGURE] = 1,
+    [ASYNC_INIT_STEP_FW_LOAD_START] = 10,
+    [ASYNC_INIT_STEP_CONFIGURE] = 4,
 };
 
 static int paw3395_async_init_power_up(const struct device *dev);
@@ -105,7 +105,7 @@ static int paw3395_async_init_fw_load(const struct device *dev) {
     return err;
 }
 
-static int paw3395_set_performance(const struct device *dev, bool enabled) {
+static int paw3395_set_performance(const struct device *dev, const bool enabled) {
     const struct pixart_config *config = dev->config;
     int err = 0;
 
@@ -150,6 +150,10 @@ static int paw3395_async_init_configure(const struct device *dev) {
     const struct pixart_config *config = dev->config;
 
     err = paw3395_set_performance(dev, true);
+    if (err < 0) {
+        LOG_ERR("can't set performance");
+        return err;
+    }
 
     err = paw3395_lib_set_cpi(&config->spi, config->cpi);
     if (err < 0) {
@@ -180,6 +184,12 @@ static int paw3395_async_init_configure(const struct device *dev) {
     err = paw3395_lib_set_mode(&config->spi, config->power_mode);
     if (err < 0) {
         LOG_ERR("can't set power mode");
+        return err;
+    }
+
+    err = paw3395_set_performance(dev, true);
+    if (err < 0) {
+        LOG_ERR("can't set performance");
         return err;
     }
 
@@ -501,9 +511,8 @@ static int on_activity_state(const zmk_event_t *eh) {
         return 0;
     }
 
-    bool enable = state_ev->state == ZMK_ACTIVITY_ACTIVE ? 1 : 0;
     for (size_t i = 0; i < ARRAY_SIZE(paw3395_devs); i++) {
-        paw3395_set_performance(paw3395_devs[i], enable);
+        paw3395_set_performance(paw3395_devs[i], state_ev->state == ZMK_ACTIVITY_ACTIVE ? 1 : 0);
     }
 
     return 0;
