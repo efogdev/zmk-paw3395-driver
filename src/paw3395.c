@@ -142,6 +142,15 @@ static int paw3395_async_init_power_up(const struct device *dev) {
     }
     LOG_INF("power up reset done");
 
+    k_usleep(10000);
+
+    err = paw3395_lib_power_up_reset(&config->spi);
+    if (err) {
+        LOG_ERR("Cannot exec paw3395_lib_power_up_reset");
+        return -EIO;
+    }
+    LOG_INF("second power up reset done");
+
     return err;
 }
 
@@ -441,7 +450,8 @@ static int paw3395_attr_set(const struct device *dev, enum sensor_channel chan,
         err = paw3395_lib_set_mode(&config->spi, val->val1);
         break;
     case PAW3395_ATTR_CALIBRATE:
-        err = paw3395_lib_calibrate(&config->spi, CONFIG_PAW3395_CALIBRATION_TIMEOUT_MS);
+        // doesn't work so commented for now
+        // err = paw3395_lib_calibrate(&config->spi, CONFIG_PAW3395_CALIBRATION_TIMEOUT_MS);
         break;
 
     default:
