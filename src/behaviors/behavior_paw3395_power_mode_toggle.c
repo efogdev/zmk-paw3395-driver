@@ -102,7 +102,11 @@ static int on_binding_pressed(struct zmk_behavior_binding *binding, struct zmk_b
     uint8_t new_mode;
     switch (binding->param1) {
     case PAW3395_POWER_MODE_ACTION_SET:
-        new_mode = binding->param2;
+        if (binding->param2 > 2) {
+            LOG_ERR("Invalid power mode %d (max 2)", binding->param2);
+            return -EINVAL;
+        }
+        new_mode = (uint8_t)binding->param2;
         break;
     case PAW3395_POWER_MODE_ACTION_TOGGLE:
         new_mode = (data->current_mode + 1) % 3;
