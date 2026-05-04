@@ -68,6 +68,9 @@ static int paw3395_async_init_power_up(const struct device *dev);
 static int paw3395_async_init_fw_load(const struct device *dev);
 static int paw3395_async_init_configure(const struct device *dev);
 
+static const struct device *paw3395_get_pair_slave(const struct device *master);
+static bool paw3395_is_pair_slave(const struct device *self);
+
 static int (*const async_init_fn[ASYNC_INIT_STEP_COUNT])(const struct device *dev) = {
     [ASYNC_INIT_STEP_POWER_UP] = paw3395_async_init_power_up,
     [ASYNC_INIT_STEP_FW_LOAD_START] = paw3395_async_init_fw_load,
@@ -123,7 +126,7 @@ static int paw3395_set_performance(const struct device *dev, const bool enabled)
 
 static int paw3395_set_interrupt(const struct device *dev, const bool en) {
     const struct pixart_config *config = dev->config;
-    int ret = gpio_pin_interrupt_configure_dt(&config->irq_gpio,
+    const int ret = gpio_pin_interrupt_configure_dt(&config->irq_gpio,
                                               en ? GPIO_INT_LEVEL_ACTIVE : GPIO_INT_DISABLE);
     if (ret < 0) {
         LOG_ERR("can't set interrupt");
@@ -196,10 +199,26 @@ static int paw3395_async_init_configure(const struct device *dev) {
         return err;
     }
 
+    err = paw3395_lib_set_lod(&config->spi, (enum paw3395_lod)config->lod);
+    if (err < 0) {
+        LOG_ERR("can't set lod");
+        return err;
+    }
+    LOG_INF("set lod done");
+
     err = paw3395_set_performance(dev, true);
     if (err < 0) {
         LOG_ERR("can't set performance");
         return err;
+    }
+
+    if (config->ripple_control) {
+        err = paw3395_lib_set_ripple_control(&config->spi, true);
+        if (err < 0) {
+            LOG_ERR("can't set ripple control");
+            return err;
+        }
+        LOG_INF("ripple control enabled");
     }
 
     return err;
@@ -236,14 +255,16 @@ static void paw3395_async_init(struct k_work *work) {
             if (data->init_retry_count > 0) {
                 LOG_INF("PAW3395 initialization succeeded after %d retries", data->init_retry_count);
             }
-            paw3395_set_interrupt(dev, true);
+            if (!paw3395_is_pair_slave(dev)) {
+                paw3395_set_interrupt(dev, true);
+            }
         } else {
             k_work_schedule(&data->init_work, K_MSEC(async_init_delay[data->async_init_step]));
         }
     }
 }
 
-static int paw3395_report_data(const struct device *dev) {
+static int paw3395_collect_data(const struct device *dev) {
     struct pixart_data *data = dev->data;
     const struct pixart_config *config = dev->config;
     uint8_t buf[PAW3395_BURST_SIZE];
@@ -260,71 +281,61 @@ static int paw3395_report_data(const struct device *dev) {
         return 0;
     }
 
-#if CONFIG_PAW3395_REPORT_INTERVAL_MIN > 0
-    int64_t now = k_uptime_get();
-#endif
-
-    int err = 0;
-    err = paw3395_lib_motion_burst_read(&config->spi, buf, PAW3395_BURST_SIZE);
+    const int err = paw3395_lib_motion_burst_read(&config->spi, buf, PAW3395_BURST_SIZE);
     if (err) {
         return err;
     }
-    // LOG_HEXDUMP_DBG(buf, PAW3395_BURST_SIZE, "buf");
 
-    //LOG_HEXDUMP_INF(buf, sizeof(buf), "buf");
-    int16_t x = ((int16_t)sys_get_le16(&buf[PAW3395_DX_POS]));
-    int16_t y = ((int16_t)sys_get_le16(&buf[PAW3395_DY_POS]));
+    const int16_t x = ((int16_t)sys_get_le16(&buf[PAW3395_DX_POS]));
+    const int16_t y = ((int16_t)sys_get_le16(&buf[PAW3395_DY_POS]));
 
-    if (!x && !y) {
-        // LOG_DBG("skip reporting zero x/y");
-        return 0;
+    if (x || y) {
+        LOG_DBG("x/y: %d/%d", x, y);
     }
-    LOG_DBG("x/y: %d/%d", x, y);
 
-// #ifdef PAW3395_SQUAL_POS
-//     LOG_DBG("motion_burst_read, X: 0x%x 0x%x, Y: 0x%x 0x%x, %d, %d, SQ: %d", 
-//         buf[PAW3395_DX_POS+1], buf[PAW3395_DX_POS],
-//         buf[PAW3395_DY_POS+1], buf[PAW3395_DY_POS],
-//         x, y, (uint8_t)buf[PAW3395_SQUAL_POS]);
-// #else
-//     LOG_DBG("motion_burst_read, X: 0x%x 0x%x, Y: 0x%x 0x%x, %d, %d",
-//         buf[PAW3395_DX_POS+1], buf[PAW3395_DX_POS],
-//         buf[PAW3395_DY_POS+1], buf[PAW3395_DY_POS],
-//         x, y);
-// #endif
-
-    // accumulate delta until report in next iteration
     data->dx += x;
     data->dy += y;
+    return 0;
+}
+
+static void paw3395_emit_pending(const struct device *dev) {
+    struct pixart_data *data = dev->data;
+    const struct pixart_config *config = dev->config;
+
+    const int16_t rx = (int16_t)CLAMP(data->dx, INT16_MIN, INT16_MAX);
+    const int16_t ry = (int16_t)CLAMP(data->dy, INT16_MIN, INT16_MAX);
+    const bool have_x = rx != 0;
+    const bool have_y = ry != 0;
+
+    if (!have_x && !have_y) {
+        return;
+    }
 
 #if CONFIG_PAW3395_REPORT_INTERVAL_MIN > 0
-    // strict to report inerval
+    const int64_t now = k_uptime_get();
     if (now - data->last_rpt_time < CONFIG_PAW3395_REPORT_INTERVAL_MIN) {
-        return 0;
+        return;
     }
+    data->last_rpt_time = now;
 #endif
 
-    // divide to report value
-    int16_t rx = (int16_t)CLAMP(data->dx, INT16_MIN, INT16_MAX);
-    int16_t ry = (int16_t)CLAMP(data->dy, INT16_MIN, INT16_MAX);
-    bool have_x = rx != 0;
-    bool have_y = ry != 0;
-
-    if (have_x || have_y) {
-#if CONFIG_PAW3395_REPORT_INTERVAL_MIN > 0
-        data->last_rpt_time = now;
-#endif
-        data->dx = 0;
-        data->dy = 0;
-        if (have_x) {
-            input_report(dev, config->evt_type, config->x_input_code, rx, !have_y, K_NO_WAIT);
-        }
-        if (have_y) {
-            input_report(dev, config->evt_type, config->y_input_code, ry, true, K_NO_WAIT);
-        }
+    data->dx = 0;
+    data->dy = 0;
+    if (have_x) {
+        input_report(dev, config->evt_type, config->x_input_code, rx, !have_y, K_NO_WAIT);
     }
+    if (have_y) {
+        input_report(dev, config->evt_type, config->y_input_code, ry, true, K_NO_WAIT);
+    }
+}
 
-    return err;
+static int paw3395_report_data(const struct device *dev) {
+    const int err = paw3395_collect_data(dev);
+    if (err) {
+        return err;
+    }
+    paw3395_emit_pending(dev);
+    return 0;
 }
 
 static void paw3395_gpio_callback(const struct device *gpiob, struct gpio_callback *cb,
@@ -338,7 +349,31 @@ static void paw3395_gpio_callback(const struct device *gpiob, struct gpio_callba
 static void paw3395_work_callback(struct k_work *work) {
     struct pixart_data *data = CONTAINER_OF(work, struct pixart_data, trigger_work);
     const struct device *dev = data->dev;
-    paw3395_report_data(dev);
+    const struct pixart_config *config = dev->config;
+
+    if (config->pair_master) {
+        const struct device *slave = paw3395_get_pair_slave(dev);
+        paw3395_collect_data(dev);
+        if (slave != NULL) {
+            paw3395_collect_data(slave);
+            struct pixart_data *m = dev->data;
+            struct pixart_data *s = slave->data;
+            const bool m_has = (m->dx != 0 || m->dy != 0);
+            const bool s_has = (s->dx != 0 || s->dy != 0);
+            if ((m_has && s_has) || m->pair_held) {
+                paw3395_emit_pending(dev);
+                paw3395_emit_pending(slave);
+                m->pair_held = false;
+            } else if (m_has || s_has) {
+                m->pair_held = true;
+            }
+        } else {
+            paw3395_emit_pending(dev);
+        }
+    } else {
+        paw3395_report_data(dev);
+    }
+
     paw3395_set_interrupt(dev, true);
 }
 
@@ -427,10 +462,10 @@ static int paw3395_init(const struct device *dev) {
     return err;
 }
 
-static int paw3395_attr_set(const struct device *dev, enum sensor_channel chan,
-                            enum sensor_attribute attr, const struct sensor_value *val) {
+static int paw3395_attr_set(const struct device *dev, const enum sensor_channel chan,
+                            const enum sensor_attribute attr, const struct sensor_value *val) {
     int err = 0;
-    struct pixart_data *data = dev->data;
+    const struct pixart_data *data = dev->data;
     const struct pixart_config *config = dev->config;
 
     if (unlikely(chan != SENSOR_CHAN_ALL)) {
@@ -497,9 +532,12 @@ static const struct sensor_driver_api paw3395_driver_api = {
         .x_input_code = DT_PROP(DT_DRV_INST(n), x_input_code),                                     \
         .y_input_code = DT_PROP(DT_DRV_INST(n), y_input_code),                                     \
         .force_awake = DT_PROP(DT_DRV_INST(n), force_awake),                                       \
+        .ripple_control = DT_PROP(DT_DRV_INST(n), ripple_control),                                 \
         .init_retry_count = DT_PROP(DT_DRV_INST(n), init_retry_count),                             \
         .init_retry_interval = DT_PROP(DT_DRV_INST(n), init_retry_interval),                       \
         .power_mode = DT_PROP(DT_DRV_INST(n), power_mode),                                         \
+        .lod = DT_PROP(DT_DRV_INST(n), liftoff_dist),                                              \
+        .pair_master = DT_PROP(DT_DRV_INST(n), pair_master),                                       \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, paw3395_init, NULL, &data##n, &config##n, POST_KERNEL,                \
                           CONFIG_INPUT_PAW3395_INIT_PRIORITY, &paw3395_driver_api);
@@ -512,6 +550,37 @@ DT_INST_FOREACH_STATUS_OKAY(PAW3395_DEFINE)
 static const struct device *paw3395_devs[] = {
     DT_FOREACH_STATUS_OKAY(pixart_paw3395, GET_PAW3395_DEV)
 };
+
+static const struct device *paw3395_get_pair_slave(const struct device *master) {
+    for (size_t i = 0; i < ARRAY_SIZE(paw3395_devs); i++) {
+        const struct device *other = paw3395_devs[i];
+        if (other == master) {
+            continue;
+        }
+        const struct pixart_config *cfg = other->config;
+        if (!cfg->pair_master) {
+            return other;
+        }
+    }
+    return NULL;
+}
+
+static bool paw3395_is_pair_slave(const struct device *self) {
+    const struct pixart_config *self_cfg = self->config;
+    if (self_cfg->pair_master) {
+        return false;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(paw3395_devs); i++) {
+        if (paw3395_devs[i] == self) {
+            continue;
+        }
+        const struct pixart_config *cfg = paw3395_devs[i]->config;
+        if (cfg->pair_master) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static int on_activity_state(const zmk_event_t *eh) {
     struct zmk_activity_state_changed *state_ev = as_zmk_activity_state_changed(eh);

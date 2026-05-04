@@ -36,7 +36,16 @@ properties:
       0: High power
       1: Low power
       2: Office
+  liftoff-dist:
+    type: int
+    default: 0
+    description: |
+      Lift-off distance
+      0: 1 mm
+      2: 2 mm
   force-awake:
+    type: boolean
+  ripple-control:
     type: boolean
   init-retry-count:
     type: int
@@ -46,3 +55,5 @@ properties:
     type: int
     default: 100
     description: "Interval between initialization retries in ms"
+  pair-master:
+    type: boolean

@@ -33,6 +33,7 @@ struct pixart_data {
 
     bool                         data_ready;
     uint8_t                      data_index;
+    bool                         pair_held;
 
     int64_t last_smp_time, last_rpt_time;
     int64_t dx, dy;
@@ -51,9 +52,12 @@ struct pixart_config {
     uint8_t x_input_code;
     uint8_t y_input_code;
     bool force_awake;
+    bool ripple_control;
     uint8_t init_retry_count;
     uint16_t init_retry_interval;
     uint8_t power_mode;
+    uint8_t lod;
+    bool pair_master;
 };
 
 #ifdef __cplusplus
