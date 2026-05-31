@@ -53,6 +53,15 @@ config PAW3395_REPORT_INTERVAL_MIN
 		Slow down input reporting for hid queue over the air.
 		Turn value down to 8ms to get sharp response if use with USB only.
 
+config PAW3395_INIT_FAILURE_THRESHOLD
+    int "Number of failed initialization attempts before triggering error"
+    default 3
+    range 0 255
+    help
+      Number of consecutive failed initialization attempts before triggering
+      an adaptive feedback error slot equal to the sensor instance index.
+      Set to 0 to disable error triggering.
+
 module = PAW3395
 module-str = PAW3395
 source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"

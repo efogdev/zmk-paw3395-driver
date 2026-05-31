@@ -14,6 +14,14 @@
 #include <zmk/events/activity_state_changed.h>
 #include "paw3395.h"
 
+#if IS_ENABLED(CONFIG_ZMK_ADAPTIVE_FEEDBACK)
+#include <zmk_adaptive_feedback/adaptive_feedback.h>
+#endif
+
+#if IS_ENABLED(CONFIG_SHELL)
+#include <zephyr/shell/shell.h>
+#endif
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(paw3395, CONFIG_PAW3395_LOG_LEVEL);
 
@@ -71,6 +79,10 @@ static int paw3395_async_init_configure(const struct device *dev);
 static const struct device *paw3395_get_pair_slave(const struct device *master);
 static bool paw3395_is_pair_slave(const struct device *self);
 
+#if IS_ENABLED(CONFIG_SHELL)
+static void paw3395_squal_accum_sample(uint8_t id, uint8_t raw);
+#endif
+
 static int (*const async_init_fn[ASYNC_INIT_STEP_COUNT])(const struct device *dev) = {
     [ASYNC_INIT_STEP_POWER_UP] = paw3395_async_init_power_up,
     [ASYNC_INIT_STEP_FW_LOAD_START] = paw3395_async_init_fw_load,
@@ -126,8 +138,7 @@ static int paw3395_set_performance(const struct device *dev, const bool enabled)
 
 static int paw3395_set_interrupt(const struct device *dev, const bool en) {
     const struct pixart_config *config = dev->config;
-    const int ret = gpio_pin_interrupt_configure_dt(&config->irq_gpio,
-                                              en ? GPIO_INT_LEVEL_ACTIVE : GPIO_INT_DISABLE);
+    const int ret = gpio_pin_interrupt_configure_dt(&config->irq_gpio, en ? GPIO_INT_LEVEL_ACTIVE : GPIO_INT_DISABLE);
     if (ret < 0) {
         LOG_ERR("can't set interrupt");
     }
@@ -240,10 +251,25 @@ static void paw3395_async_init(struct k_work *work) {
             data->init_retry_count++;
             LOG_WRN("PAW3395#%d retrying initialization (attempt %d/%d)",
                     config->id, data->init_retry_count, config->init_retry_count);
-            
+
+#if IS_ENABLED(CONFIG_ZMK_ADAPTIVE_FEEDBACK)
+            // ReSharper disable once CppRedundantBooleanExpressionArgument
+            if (data->init_retry_count >= CONFIG_PAW3395_INIT_FAILURE_THRESHOLD && CONFIG_PAW3395_INIT_FAILURE_THRESHOLD > 0 && !data->error_triggered) {
+                zaf_error_trigger(config->id);
+                data->error_triggered = true;
+            }
+#endif
+
             data->async_init_step = ASYNC_INIT_STEP_POWER_UP;
             k_work_schedule(&data->init_work, K_MSEC(config->init_retry_interval));
         } else {
+#if IS_ENABLED(CONFIG_ZMK_ADAPTIVE_FEEDBACK)
+            if (!data->error_triggered) {
+                zaf_error_trigger(config->id);
+                data->error_triggered = true;
+            }
+#endif
+
             LOG_ERR("PAW3395#%d initialization failed after %d attempts", config->id, config->init_retry_count);
         }
     } else {
@@ -251,6 +277,11 @@ static void paw3395_async_init(struct k_work *work) {
 
         if (data->async_init_step == ASYNC_INIT_STEP_COUNT) {
             data->ready = true; // sensor is ready to work
+
+#if IS_ENABLED(CONFIG_ZMK_ADAPTIVE_FEEDBACK)
+            zaf_error_clear(config->id);
+#endif
+
             LOG_INF("PAW3395 initialized");
             if (data->init_retry_count > 0) {
                 LOG_INF("PAW3395 initialization succeeded after %d retries", data->init_retry_count);
@@ -288,6 +319,11 @@ static int paw3395_collect_data(const struct device *dev) {
 
     const int16_t x = ((int16_t)sys_get_le16(&buf[PAW3395_DX_POS]));
     const int16_t y = ((int16_t)sys_get_le16(&buf[PAW3395_DY_POS]));
+
+    data->last_squal = buf[PAW3395_SQUAL_POS];
+#if IS_ENABLED(CONFIG_SHELL)
+    paw3395_squal_accum_sample(config->id, data->last_squal);
+#endif
 
     if (x || y) {
         LOG_DBG("x/y: %d/%d", x, y);
@@ -459,6 +495,12 @@ static int paw3395_init(const struct device *dev) {
 
     k_work_schedule(&data->init_work, K_MSEC(async_init_delay[data->async_init_step]));
 
+#if IS_ENABLED(CONFIG_PM_DEVICE)
+    if (pm_device_wakeup_is_capable(dev)) {
+        pm_device_wakeup_enable(dev, true);
+    }
+#endif
+
     return err;
 }
 
@@ -501,19 +543,34 @@ static const struct sensor_driver_api paw3395_driver_api = {
     .attr_set = paw3395_attr_set,
 };
 
-// #if IS_ENABLED(CONFIG_PM_DEVICE)
-// static int paw3395_pm_action(const struct device *dev, enum pm_device_action action) {
-//     switch (action) {
-//     case PM_DEVICE_ACTION_SUSPEND:
-//         return paw3395_set_interrupt(dev, false);
-//     case PM_DEVICE_ACTION_RESUME:
-//         return paw3395_set_interrupt(dev, true);
-//     default:
-//         return -ENOTSUP;
-//     }
-// }
-// #endif // IS_ENABLED(CONFIG_PM_DEVICE)
-// PM_DEVICE_DT_INST_DEFINE(n, paw3395_pm_action);
+#if IS_ENABLED(CONFIG_PM_DEVICE)
+static int paw3395_pm_action(const struct device *dev, enum pm_device_action action) {
+    struct pixart_data *data = dev->data;
+    const struct pixart_config *config = dev->config;
+
+    switch (action) {
+    case PM_DEVICE_ACTION_SUSPEND: {
+        if (pm_device_wakeup_is_enabled(dev)) {
+            return 0;
+        }
+        int ret = paw3395_set_interrupt(dev, false);
+        if (ret < 0) {
+            return ret;
+        }
+        data->ready = false;
+        return paw3395_lib_shutdown(&config->spi);
+    }
+    case PM_DEVICE_ACTION_RESUME:
+        data->async_init_step = ASYNC_INIT_STEP_POWER_UP;
+        data->init_retry_count = 0;
+        data->init_retry_attempts = config->init_retry_count;
+        return k_work_schedule(&data->init_work,
+                               K_MSEC(async_init_delay[ASYNC_INIT_STEP_POWER_UP])) < 0 ? -EIO : 0;
+    default:
+        return -ENOTSUP;
+    }
+}
+#endif // IS_ENABLED(CONFIG_PM_DEVICE)
 
 #define PAW3395_SPI_MODE (SPI_WORD_SET(8) | SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_TRANSFER_MSB |     \
                           SPI_OP_MODE_MASTER | SPI_HOLD_ON_CS | SPI_LOCK_ON)
@@ -539,8 +596,9 @@ static const struct sensor_driver_api paw3395_driver_api = {
         .lod = DT_PROP(DT_DRV_INST(n), liftoff_dist),                                              \
         .pair_master = DT_PROP(DT_DRV_INST(n), pair_master),                                       \
     };                                                                                             \
-    DEVICE_DT_INST_DEFINE(n, paw3395_init, NULL, &data##n, &config##n, POST_KERNEL,                \
-                          CONFIG_INPUT_PAW3395_INIT_PRIORITY, &paw3395_driver_api);
+    PM_DEVICE_DT_INST_DEFINE(n, paw3395_pm_action);                                                \
+    DEVICE_DT_INST_DEFINE(n, paw3395_init, PM_DEVICE_DT_INST_GET(n), &data##n, &config##n,         \
+                          POST_KERNEL, CONFIG_INPUT_PAW3395_INIT_PRIORITY, &paw3395_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(PAW3395_DEFINE)
 
@@ -599,3 +657,106 @@ static int on_activity_state(const zmk_event_t *eh) {
 
 ZMK_LISTENER(zmk_paw3395_idle_sleeper, on_activity_state);
 ZMK_SUBSCRIPTION(zmk_paw3395_idle_sleeper, zmk_activity_state_changed);
+
+#if IS_ENABLED(CONFIG_SHELL)
+#define PAW3395_SQUAL_MAX_FEATURES (0xB6u << 2)
+
+struct paw3395_squal_accum {
+    bool active;
+    uint8_t min, max;
+    uint32_t sum;
+    uint32_t count;
+};
+static struct paw3395_squal_accum squal_accum[ARRAY_SIZE(paw3395_devs)];
+static struct k_spinlock squal_accum_lock;
+
+static void paw3395_squal_accum_sample(const uint8_t id, const uint8_t raw) {
+    if (id >= ARRAY_SIZE(squal_accum)) {
+        return;
+    }
+    struct paw3395_squal_accum *a = &squal_accum[id];
+    if (!a->active) {
+        return;
+    }
+    const k_spinlock_key_t key = k_spin_lock(&squal_accum_lock);
+    if (a->active) {
+        if (a->count == 0 || raw < a->min) {
+            a->min = raw;
+        }
+        if (a->count == 0 || raw > a->max) {
+            a->max = raw;
+        }
+        a->sum += raw;
+        a->count++;
+    }
+    k_spin_unlock(&squal_accum_lock, key);
+}
+
+static int cmd_sensor_surface(const struct shell *sh, const size_t argc, char **argv) {
+    if (argc == 1) {
+        for (size_t i = 0; i < ARRAY_SIZE(paw3395_devs); i++) {
+            const struct device *dev = paw3395_devs[i];
+            const struct pixart_config *config = dev->config;
+            const struct pixart_data *data = dev->data;
+            if (!data->ready) {
+                shell_print(sh, "Sensor #%u: not ready", config->id);
+                continue;
+            }
+            const uint16_t corrected = ((uint16_t) data->last_squal) << 2;
+            shell_print(sh, "Sensor #%u: surface quality = %u/%u (last reported)",
+                        config->id, corrected, PAW3395_SQUAL_MAX_FEATURES);
+        }
+        return 0;
+    }
+
+    if (argc == 3 && strcmp(argv[1], "--accum-ms") == 0) {
+        char *end;
+        const unsigned long ms = strtoul(argv[2], &end, 10);
+        if (*end != '\0' || ms == 0 || ms > 60000) {
+            shell_error(sh, "Invalid duration: %s (1..60000 ms)", argv[2]);
+            return -EINVAL;
+        }
+
+        k_spinlock_key_t key = k_spin_lock(&squal_accum_lock);
+        for (size_t i = 0; i < ARRAY_SIZE(squal_accum); i++) {
+            squal_accum[i] = (struct paw3395_squal_accum){ .active = true };
+        }
+        k_spin_unlock(&squal_accum_lock, key);
+        k_msleep((int32_t) ms);
+
+        struct paw3395_squal_accum snapshot[ARRAY_SIZE(squal_accum)];
+        key = k_spin_lock(&squal_accum_lock);
+        for (size_t i = 0; i < ARRAY_SIZE(squal_accum); i++) {
+            squal_accum[i].active = false;
+            snapshot[i] = squal_accum[i];
+        }
+        k_spin_unlock(&squal_accum_lock, key);
+
+        for (size_t i = 0; i < ARRAY_SIZE(paw3395_devs); i++) {
+            const struct pixart_config *config = paw3395_devs[i]->config;
+            const struct paw3395_squal_accum *a = &snapshot[i];
+            if (a->count == 0) {
+                shell_print(sh, "Sensor #%u: no samples (move pointer during the test)", config->id);
+                continue;
+            }
+            const uint16_t min_f = ((uint16_t) a->min) << 2;
+            const uint16_t max_f = ((uint16_t) a->max) << 2;
+            const uint32_t avg_f = (a->sum << 2) / a->count;
+            shell_print(sh, "Sensor #%u: %u/%u/%u of %u (min/max/avg) over %u samples",
+                        config->id, min_f, max_f, avg_f,
+                        PAW3395_SQUAL_MAX_FEATURES, a->count);
+        }
+        return 0;
+    }
+
+    shell_error(sh, "usage: sensor surface [--accum-ms N]");
+    return -EINVAL;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_sensor,
+    SHELL_CMD_ARG(surface, NULL, "Read surface quality. Usage: surface [--accum-ms N]", cmd_sensor_surface, 1, 2),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(sensor, &sub_sensor, "Sensor diagnostics", NULL);
+
+#endif

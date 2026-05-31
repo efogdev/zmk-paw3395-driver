@@ -24,11 +24,12 @@ struct pixart_data {
     struct k_work                trigger_work; // realtrigger job
 
     struct k_work_delayable      init_work; // the work structure for delayable init steps
-    int                          async_init_step;
-    int                          init_retry_count; // current retry count
-    int                          init_retry_attempts; // remaining retry attempts
+    uint8_t                      async_init_step;
+    uint8_t                      init_retry_count; // current retry count
+    uint8_t                      init_retry_attempts; // remaining retry attempts
 
     bool                         ready; // whether init is finished successfully
+    bool                         error_triggered;
     int                          err; // error code during async init
 
     bool                         data_ready;
@@ -37,6 +38,8 @@ struct pixart_data {
 
     int64_t last_smp_time, last_rpt_time;
     int64_t dx, dy;
+
+    uint8_t last_squal;
 };
 
 // device config data structure

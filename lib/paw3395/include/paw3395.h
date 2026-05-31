@@ -18,11 +18,12 @@
 #include <zephyr/drivers/sensor.h>
 
 /* Register count used for reading a single motion burst */
-#define PAW3395_BURST_SIZE 6
+#define PAW3395_BURST_SIZE 7
 
 /* Position of X in motion burst data */
 #define PAW3395_DX_POS 2
 #define PAW3395_DY_POS 4
+#define PAW3395_SQUAL_POS 6
 
 static enum paw3395_mode {
     PAW3395_MODE_HIGH_PERFORMANCE = 0x00,
@@ -47,6 +48,7 @@ int paw3395_lib_set_ripple_control(const struct spi_dt_spec *spi, bool enable);
 int paw3395_lib_set_mode(const struct spi_dt_spec *spi, enum paw3395_mode mode);
 int paw3395_lib_set_lod(const struct spi_dt_spec *spi, enum paw3395_lod lod);
 int paw3395_lib_calibrate(const struct spi_dt_spec *spi, uint32_t timeout_ms);
+int paw3395_lib_shutdown(const struct spi_dt_spec *spi);
 
 // weak linked reference logger
 extern void paw3395_lib_log_err(const char *fmt, ...);

@@ -4,14 +4,14 @@
 			compatible = "zmk,behavior-paw3395-calibrate";
 			#binding-cells = <0>;
 			display-name = "Manual calibration of the PAW3395 sensors";
-			feedback-duration = <200>;
+			feedback-duration = <65>;
 		};
 
 		/omit-if-no-ref/ paw_mode: paw_mode {
 			compatible = "zmk,behavior-paw3395-power-mode-toggle";
 			#binding-cells = <2>;
 			display-name = "Switch PAW3395 mode";
-			feedback-duration = <200>;
+			feedback-duration = <65>;
 		};
 	};
 };
