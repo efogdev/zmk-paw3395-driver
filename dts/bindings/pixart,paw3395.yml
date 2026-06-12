@@ -55,5 +55,3 @@ properties:
     type: int
     default: 100
     description: "Interval between initialization retries in ms"
-  pair-master:
-    type: boolean

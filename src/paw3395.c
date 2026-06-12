@@ -76,9 +76,6 @@ static int paw3395_async_init_power_up(const struct device *dev);
 static int paw3395_async_init_fw_load(const struct device *dev);
 static int paw3395_async_init_configure(const struct device *dev);
 
-static const struct device *paw3395_get_pair_slave(const struct device *master);
-static bool paw3395_is_pair_slave(const struct device *self);
-
 #if IS_ENABLED(CONFIG_SHELL)
 static void paw3395_squal_accum_sample(uint8_t id, uint8_t raw);
 #endif
@@ -286,9 +283,7 @@ static void paw3395_async_init(struct k_work *work) {
             if (data->init_retry_count > 0) {
                 LOG_INF("PAW3395 initialization succeeded after %d retries", data->init_retry_count);
             }
-            if (!paw3395_is_pair_slave(dev)) {
-                paw3395_set_interrupt(dev, true);
-            }
+            paw3395_set_interrupt(dev, true);
         } else {
             k_work_schedule(&data->init_work, K_MSEC(async_init_delay[data->async_init_step]));
         }
@@ -385,30 +380,8 @@ static void paw3395_gpio_callback(const struct device *gpiob, struct gpio_callba
 static void paw3395_work_callback(struct k_work *work) {
     struct pixart_data *data = CONTAINER_OF(work, struct pixart_data, trigger_work);
     const struct device *dev = data->dev;
-    const struct pixart_config *config = dev->config;
 
-    if (config->pair_master) {
-        const struct device *slave = paw3395_get_pair_slave(dev);
-        paw3395_collect_data(dev);
-        if (slave != NULL) {
-            paw3395_collect_data(slave);
-            struct pixart_data *m = dev->data;
-            struct pixart_data *s = slave->data;
-            const bool m_has = (m->dx != 0 || m->dy != 0);
-            const bool s_has = (s->dx != 0 || s->dy != 0);
-            if ((m_has && s_has) || m->pair_held) {
-                paw3395_emit_pending(dev);
-                paw3395_emit_pending(slave);
-                m->pair_held = false;
-            } else if (m_has || s_has) {
-                m->pair_held = true;
-            }
-        } else {
-            paw3395_emit_pending(dev);
-        }
-    } else {
-        paw3395_report_data(dev);
-    }
+    paw3395_report_data(dev);
 
     paw3395_set_interrupt(dev, true);
 }
@@ -594,7 +567,6 @@ static int paw3395_pm_action(const struct device *dev, enum pm_device_action act
         .init_retry_interval = DT_PROP(DT_DRV_INST(n), init_retry_interval),                       \
         .power_mode = DT_PROP(DT_DRV_INST(n), power_mode),                                         \
         .lod = DT_PROP(DT_DRV_INST(n), liftoff_dist),                                              \
-        .pair_master = DT_PROP(DT_DRV_INST(n), pair_master),                                       \
     };                                                                                             \
     PM_DEVICE_DT_INST_DEFINE(n, paw3395_pm_action);                                                \
     DEVICE_DT_INST_DEFINE(n, paw3395_init, PM_DEVICE_DT_INST_GET(n), &data##n, &config##n,         \
@@ -608,37 +580,6 @@ DT_INST_FOREACH_STATUS_OKAY(PAW3395_DEFINE)
 static const struct device *paw3395_devs[] = {
     DT_FOREACH_STATUS_OKAY(pixart_paw3395, GET_PAW3395_DEV)
 };
-
-static const struct device *paw3395_get_pair_slave(const struct device *master) {
-    for (size_t i = 0; i < ARRAY_SIZE(paw3395_devs); i++) {
-        const struct device *other = paw3395_devs[i];
-        if (other == master) {
-            continue;
-        }
-        const struct pixart_config *cfg = other->config;
-        if (!cfg->pair_master) {
-            return other;
-        }
-    }
-    return NULL;
-}
-
-static bool paw3395_is_pair_slave(const struct device *self) {
-    const struct pixart_config *self_cfg = self->config;
-    if (self_cfg->pair_master) {
-        return false;
-    }
-    for (size_t i = 0; i < ARRAY_SIZE(paw3395_devs); i++) {
-        if (paw3395_devs[i] == self) {
-            continue;
-        }
-        const struct pixart_config *cfg = paw3395_devs[i]->config;
-        if (cfg->pair_master) {
-            return true;
-        }
-    }
-    return false;
-}
 
 static int on_activity_state(const zmk_event_t *eh) {
     struct zmk_activity_state_changed *state_ev = as_zmk_activity_state_changed(eh);
