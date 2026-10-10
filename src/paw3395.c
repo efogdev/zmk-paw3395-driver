@@ -67,7 +67,7 @@ enum async_init_step {
 // - Since MCU is not involved in the sensor init process, i is allowed to do other tasks.
 //   Thus, k_sleep or delayed schedule can be used.
 static const int32_t async_init_delay[ASYNC_INIT_STEP_COUNT] = {
-    [ASYNC_INIT_STEP_POWER_UP] = 50 + CONFIG_PAW3395_INIT_POWER_UP_EXTRA_DELAY_MS,
+    [ASYNC_INIT_STEP_POWER_UP] = 10 + CONFIG_PAW3395_INIT_POWER_UP_EXTRA_DELAY_MS,
     [ASYNC_INIT_STEP_FW_LOAD_START] = 10,
     [ASYNC_INIT_STEP_CONFIGURE] = 4,
 };
@@ -153,7 +153,7 @@ static int paw3395_async_init_power_up(const struct device *dev) {
     }
     LOG_INF("power up reset done");
 
-    k_usleep(10000);
+    k_usleep(1000);
 
     err = paw3395_lib_power_up_reset(&config->spi);
     if (err) {
@@ -378,11 +378,10 @@ static void paw3395_gpio_callback(const struct device *gpiob, struct gpio_callba
 }
 
 static void paw3395_work_callback(struct k_work *work) {
-    struct pixart_data *data = CONTAINER_OF(work, struct pixart_data, trigger_work);
+    const struct pixart_data *data = CONTAINER_OF(work, struct pixart_data, trigger_work);
     const struct device *dev = data->dev;
 
     paw3395_report_data(dev);
-
     paw3395_set_interrupt(dev, true);
 }
 
@@ -517,7 +516,7 @@ static const struct sensor_driver_api paw3395_driver_api = {
 };
 
 #if IS_ENABLED(CONFIG_PM_DEVICE)
-static int paw3395_pm_action(const struct device *dev, enum pm_device_action action) {
+static int paw3395_pm_action(const struct device *dev, const enum pm_device_action action) {
     struct pixart_data *data = dev->data;
     const struct pixart_config *config = dev->config;
 
@@ -526,7 +525,7 @@ static int paw3395_pm_action(const struct device *dev, enum pm_device_action act
         if (pm_device_wakeup_is_enabled(dev)) {
             return 0;
         }
-        int ret = paw3395_set_interrupt(dev, false);
+        const int ret = paw3395_set_interrupt(dev, false);
         if (ret < 0) {
             return ret;
         }
